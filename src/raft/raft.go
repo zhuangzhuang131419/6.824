@@ -212,12 +212,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	reply = &AppendEntriesReply{}
-	if args.term < rf.currentTerm {
+	if args.Term < rf.currentTerm {
 		reply.success = false
 		return
 	}
 
-	rf.currentTerm = args.term
+	rf.currentTerm = args.Term
 	rf.votedFor = -1
 
 
