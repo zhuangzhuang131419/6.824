@@ -101,10 +101,13 @@ type Entry struct {
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 
-	var term int
-	var isleader bool
+	//var term int
+	//var isleader bool
 	// Your code here (2A).
-	return term, isleader
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.currentTerm, rf.role == LEADER
+	// return term, isleader
 }
 
 //
@@ -386,7 +389,7 @@ func (rf *Raft) electionLoop() {
 		rf.electionTimer.Reset(getRandomElectionTimeout())
 
 		// 如果自己是leader就不重新选举
-		if rf.role == LEADER {
+		if _, isLeader := rf.GetState(); isLeader {
 			continue
 		}
 
@@ -398,14 +401,60 @@ func (rf *Raft) electionLoop() {
 		rf.persist()
 		_, _ = DPrintf("%s change to candidate", rf.string())
 		rf.mu.Unlock()
+
+
+		// 请求投票
+		// 保证当选的 candidate 的 log 比过半数的 peer 更 up-to-date
+
+		wg := sync.WaitGroup{}
+		for i := 0; i < len(rf.peers); i++ {
+			wg.Add(1)
+			args := &RequestVoteArgs{
+				Term:         rf.currentTerm,
+				CandidateID:  rf.me,
+				LastLogIndex: len(rf.log) - 1,
+				LastLogTerm:  rf.log[len(rf.log) - 1].Term,
+			}
+			reply := &RequestVoteReply{}
+
+			go rf.sendRequestVote(rf.me, args, reply)
+
+			wg.Done()
+		}
+
+		wg.Wait()
+
+
+
+
 	}
+}
+
+/*
+	Raft determines which of two logs is more up-to-date by
+	comparing the index and term of the last entries in the logs.
+
+	If the logs have last entries with different terms,
+	then the log with the later term is more up-to-date.
+
+	If the logs end with the same term, then whichever log is longer is more up-to-date.
+ */
+func (rf *Raft) isUpToDate(other *Raft) bool {
+	lastEntry := rf.log[len(rf.log) - 1]
+	otherLastEntry := other.log[len(other.log) - 1]
+
+	if lastEntry.Term != otherLastEntry.Term {
+		return lastEntry.Term > otherLastEntry.Term
+	}
+
+	return len(rf.log) > len(other.log)
 }
 
 func (rf *Raft) pingLoop() {
 	for {
 
-
-		if rf.role != LEADER {
+		// 如果不是 leader 直接返回
+		if _, isLeader := rf.GetState(); !isLeader {
 			return
 		}
 
