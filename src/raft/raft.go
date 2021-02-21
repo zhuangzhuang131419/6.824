@@ -439,6 +439,7 @@ func (rf *Raft) electionLoop() {
 		rf.role = CANDIDATE
 		rf.currentTerm++
 		rf.votedFor = rf.me
+		rf.voteCounter = 0
 		rf.persist()
 		_, _ = DPrintf("%s change to candidate", rf.string())
 		rf.mu.Unlock()
@@ -447,22 +448,71 @@ func (rf *Raft) electionLoop() {
 		// 保证当选的 candidate 的 log 比过半数的 peer 更 up-to-date
 
 		wg := sync.WaitGroup{}
-		for i := 0; i < len(rf.peers); i++ {
-			wg.Add(1)
-			args := &RequestVoteArgs{
-				Term:         rf.currentTerm,
-				CandidateID:  rf.me,
-				LastLogIndex: len(rf.log) - 1,
-				LastLogTerm:  rf.log[len(rf.log)-1].Term,
+
+		for i := range rf.peers {
+			if i == rf.me {
+				rf.votedFor = rf.me
+				continue
 			}
-			reply := &RequestVoteReply{}
+			wg.Add(1)
 
-			go rf.sendRequestVote(rf.me, args, reply)
+			go func(id int) {
+				rf.mu.Lock()
+				args := &RequestVoteArgs{
+					Term:         rf.currentTerm,
+					CandidateID:  rf.me,
+					LastLogIndex: len(rf.log) - 1,
+					LastLogTerm:  rf.log[len(rf.log)-1].Term,
+				}
+				reply := &RequestVoteReply{}
+				rf.mu.Unlock()
 
-			wg.Done()
+				if ok := rf.sendRequestVote(rf.me, args, reply); !ok {
+					_, _ = DPrintf("send Request Vote to server failed. server: %v, args: %v, reply: %v", rf.string(), args, reply)
+					return
+				}
+
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+
+				if reply.term > rf.currentTerm {
+					// 变回 follower
+					rf.role = FOLLOWER
+					rf.currentTerm = reply.term
+					rf.votedFor = -1
+					rf.electionTimer.Reset(getRandomElectionTimeout())
+				}
+
+				if rf.role != CANDIDATE || rf.currentTerm != args.Term {
+					return
+				}
+
+				if reply.voteGranted {
+					rf.voteCounter++
+				}
+
+				wg.Done()
+			}(i)
 		}
 
 		wg.Wait()
+
+		if rf.voteCounter > len(rf.peers) / 2 {
+			// 获得过半选票，成为 leader
+			if rf.role != CANDIDATE {
+				return
+			}
+			rf.role = LEADER
+			rf.votedFor = -1
+
+			for i := range rf.peers {
+				rf.matchIndex[i] = 0
+				rf.nextIndex[i] = len(rf.log)
+			}
+
+			rf.pingTimer.Reset(HEART_BEAT_INTERVAL)
+			go rf.pingLoop()
+		}
 
 	}
 }
@@ -501,7 +551,11 @@ func (rf *Raft) applyLoop() {
 		rf.mu.Lock()
 		for rf.lastApplied < rf.commitIndex {
 			rf.lastApplied++
-
+			rf.applyCh <- ApplyMsg{
+				CommandValid: true,
+				Command:      rf.log[rf.lastApplied].Command,
+				CommandIndex: rf.lastApplied,
+			}
 		}
 		rf.mu.Unlock()
 	}
