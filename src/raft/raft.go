@@ -61,8 +61,8 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	role RoleType // 0-leader, 1-follower or 2-candidate
-	voteCounter int // 投票计数器
+	role        RoleType // 0-leader, 1-follower or 2-candidate
+	voteCounter int      // 投票计数器
 
 	// persistent state on all servers
 	currentTerm int     // latest term server has seen
@@ -74,12 +74,12 @@ type Raft struct {
 	lastApplied int // index of highest log entry applied to state machine
 
 	// volatile state on leaders
-	nextIndex []int // for each server, index of the next log entry to send to that server
+	nextIndex  []int // for each server, index of the next log entry to send to that server
 	matchIndex []int // for each server, index of highest log entry known to be replicated on server
 
 	// timer
 	electionTimer *time.Timer
-	pingTimer *time.Timer
+	pingTimer     *time.Timer
 
 	applyCh chan ApplyMsg
 }
@@ -166,6 +166,7 @@ type AppendEntriesArgs struct {
 	PrevLogIndex int     // index of log entry immediately preceding new ones
 	PrevLogTerm  int     // term of prevLogIndex entry
 	Entries      []Entry // log entries to store
+	LeaderCommit int     // leader's commit index
 }
 
 //
@@ -211,12 +212,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				If the logs end with the same term, then whichever log is longer is more up-to-date.
 			*/
 
-			if args.LastLogTerm > rf.log[len(rf.log) - 1].Term {
+			if args.LastLogTerm > rf.log[len(rf.log)-1].Term {
 				reply.term = args.Term
 				reply.voteGranted = true
 				rf.votedFor = args.CandidateID
 				return
-			} else if rf.log[len(rf.log) - 1].Term == args.LastLogTerm {
+			} else if rf.log[len(rf.log)-1].Term == args.LastLogTerm {
 				if args.LastLogIndex >= len(rf.log) {
 					reply.term = args.Term
 					reply.voteGranted = true
@@ -232,16 +233,42 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	reply = &AppendEntriesReply{}
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	reply = &AppendEntriesReply{
+		term:    rf.currentTerm,
+		success: false,
+	}
 	if args.Term < rf.currentTerm {
-		reply.success = false
+		// leader 的 term 落后于 follower
 		return
 	}
 
-	rf.currentTerm = args.Term
-	rf.votedFor = -1
+	if len(rf.log) <= args.PrevLogIndex {
+		// log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
+		// follower 在它的日志中找不到包含相同索引位置和任期号的条目，那么他就会拒绝该新的日志条目
+		return
+	}
 
+	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		// an existing entry conflicts with a new one (same index but different terms),
+		//deleting the existing
+		rf.log = rf.log[0:args.PrevLogIndex]
+		return
+	}
 
+	// append any new entries not already in the log
+	rf.log = append(rf.log[0:args.PrevLogIndex + 1], args.Entries...)
+
+	if args.LeaderCommit > rf.commitIndex {
+		// commitIndex = min(leaderCommit, index of last new entry)
+		if args.LeaderCommit > len(rf.log) - 1 {
+			rf.commitIndex = len(rf.log) - 1
+		} else {
+			rf.commitIndex = args.LeaderCommit
+		}
+	}
+	reply.success = true
 }
 
 //
@@ -362,22 +389,19 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	return rf
 }
 
-
-
 //
 // 三个loop: electionLoop, pingLoop, applyLoop
 //
 func (rf *Raft) raftLoop() {
-	for  {
+	for {
 		if rf.dead != 1 {
-
 
 			for i, _ := range rf.peers {
 				args := &RequestVoteArgs{
 					Term:         rf.currentTerm,
 					CandidateID:  i,
 					LastLogIndex: len(rf.log) - 1,
-					LastLogTerm:  rf.log[len(rf.log) - 1].Term,
+					LastLogTerm:  rf.log[len(rf.log)-1].Term,
 				}
 				reply := &RequestVoteReply{}
 
@@ -389,9 +413,8 @@ func (rf *Raft) raftLoop() {
 				}
 			}
 
-			if rf.voteCounter >= len(rf.peers) / 2 + 1 {
+			if rf.voteCounter >= len(rf.peers)/2+1 {
 				// 超过半数
-
 
 			}
 
@@ -420,7 +443,6 @@ func (rf *Raft) electionLoop() {
 		_, _ = DPrintf("%s change to candidate", rf.string())
 		rf.mu.Unlock()
 
-
 		// 请求投票
 		// 保证当选的 candidate 的 log 比过半数的 peer 更 up-to-date
 
@@ -431,7 +453,7 @@ func (rf *Raft) electionLoop() {
 				Term:         rf.currentTerm,
 				CandidateID:  rf.me,
 				LastLogIndex: len(rf.log) - 1,
-				LastLogTerm:  rf.log[len(rf.log) - 1].Term,
+				LastLogTerm:  rf.log[len(rf.log)-1].Term,
 			}
 			reply := &RequestVoteReply{}
 
@@ -441,9 +463,6 @@ func (rf *Raft) electionLoop() {
 		}
 
 		wg.Wait()
-
-
-
 
 	}
 }
@@ -462,7 +481,7 @@ func (rf *Raft) pingLoop() {
 			Term:         rf.currentTerm,
 			LeaderID:     rf.me,
 			PrevLogIndex: len(rf.log) - 1,
-			PrevLogTerm:  rf.log[len(rf.log) - 1].Term,
+			PrevLogTerm:  rf.log[len(rf.log)-1].Term,
 			Entries:      rf.log,
 		}
 
@@ -476,7 +495,7 @@ func (rf *Raft) pingLoop() {
 	}
 }
 
-func (rf *Raft) applyLoop()  {
+func (rf *Raft) applyLoop() {
 	for {
 		time.Sleep(10 * time.Millisecond)
 		rf.mu.Lock()
