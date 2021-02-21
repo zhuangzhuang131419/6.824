@@ -192,24 +192,42 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	reply = &RequestVoteReply{}
 	if args.Term < rf.currentTerm {
+		// candidate 的 term 落后于 follower
+		reply.term = rf.currentTerm
 		reply.voteGranted = false
 		return
 	} else {
+		// candidate term >= follower's term
 		if rf.votedFor == args.CandidateID || rf.votedFor == -1 {
 			// candidate's log is at least up up-to-date as receiver's log
-			if args.LastLogIndex >= rf.commitIndex {
-				reply.term = args.LastLogTerm
+
+			/*
+				Raft determines which of two logs is more up-to-date by
+				comparing the index and term of the last entries in the logs.
+
+				If the logs have last entries with different terms,
+				then the log with the later term is more up-to-date.
+
+				If the logs end with the same term, then whichever log is longer is more up-to-date.
+			*/
+
+			if args.LastLogTerm > rf.log[len(rf.log) - 1].Term {
+				reply.term = args.Term
 				reply.voteGranted = true
-			} else {
-				reply.term = args.LastLogTerm
-				reply.voteGranted = false
+				rf.votedFor = args.CandidateID
+				return
+			} else if rf.log[len(rf.log) - 1].Term == args.LastLogTerm {
+				if args.LastLogIndex >= len(rf.log) {
+					reply.term = args.Term
+					reply.voteGranted = true
+					rf.votedFor = args.CandidateID
+					return
+				}
 			}
-			return
-		} else {
-			reply.term = args.LastLogTerm
-			reply.voteGranted = false
-			return
 		}
+		reply.term = args.Term
+		reply.voteGranted = false
+		return
 	}
 }
 
@@ -428,26 +446,6 @@ func (rf *Raft) electionLoop() {
 
 
 	}
-}
-
-/*
-	Raft determines which of two logs is more up-to-date by
-	comparing the index and term of the last entries in the logs.
-
-	If the logs have last entries with different terms,
-	then the log with the later term is more up-to-date.
-
-	If the logs end with the same term, then whichever log is longer is more up-to-date.
- */
-func (rf *Raft) isUpToDate(other *Raft) bool {
-	lastEntry := rf.log[len(rf.log) - 1]
-	otherLastEntry := other.log[len(other.log) - 1]
-
-	if lastEntry.Term != otherLastEntry.Term {
-		return lastEntry.Term > otherLastEntry.Term
-	}
-
-	return len(rf.log) > len(other.log)
 }
 
 func (rf *Raft) pingLoop() {
