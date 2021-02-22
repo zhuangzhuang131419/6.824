@@ -175,13 +175,13 @@ type AppendEntriesArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
-	term        int  // currentTerm, for candidate to update itself
-	voteGranted bool // true means candidate received vote
+	Term        int  // currentTerm, for candidate to update itself
+	VoteGranted bool // true means candidate received vote
 }
 
 type AppendEntriesReply struct {
-	term    int  // currentTerm, for leader to update itself
-	success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+	Term    int  // currentTerm, for leader to update itself
+	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
 }
 
 //
@@ -192,10 +192,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	reply = &RequestVoteReply{}
+	_, _ = DPrintf("Call Request Vote. args: %v, reply: %v", args, reply)
 	if args.Term < rf.currentTerm {
 		// candidate 的 term 落后于 follower
-		reply.term = rf.currentTerm
-		reply.voteGranted = false
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
 		return
 	} else {
 		// candidate term >= follower's term
@@ -213,21 +214,21 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			*/
 
 			if args.LastLogTerm > rf.log[len(rf.log)-1].Term {
-				reply.term = args.Term
-				reply.voteGranted = true
+				reply.Term = args.Term
+				reply.VoteGranted = true
 				rf.votedFor = args.CandidateID
 				return
 			} else if rf.log[len(rf.log)-1].Term == args.LastLogTerm {
 				if args.LastLogIndex >= len(rf.log) {
-					reply.term = args.Term
-					reply.voteGranted = true
+					reply.Term = args.Term
+					reply.VoteGranted = true
 					rf.votedFor = args.CandidateID
 					return
 				}
 			}
 		}
-		reply.term = args.Term
-		reply.voteGranted = false
+		reply.Term = args.Term
+		reply.VoteGranted = false
 		return
 	}
 }
@@ -236,8 +237,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	reply = &AppendEntriesReply{
-		term:    rf.currentTerm,
-		success: false,
+		Term:    rf.currentTerm,
+		Success: false,
 	}
 	if args.Term < rf.currentTerm {
 		// leader 的 term 落后于 follower
@@ -268,7 +269,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.commitIndex = args.LeaderCommit
 		}
 	}
-	reply.success = true
+	reply.Success = true
 }
 
 //
@@ -457,10 +458,10 @@ func (rf *Raft) electionLoop() {
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
 
-				if reply.term > rf.currentTerm {
+				if reply.Term > rf.currentTerm {
 					// 变回 follower
 					rf.role = FOLLOWER
-					rf.currentTerm = reply.term
+					rf.currentTerm = reply.Term
 					rf.votedFor = -1
 					rf.electionTimer.Reset(getRandomElectionTimeout())
 				}
@@ -469,7 +470,7 @@ func (rf *Raft) electionLoop() {
 					return
 				}
 
-				if reply.voteGranted {
+				if reply.VoteGranted {
 					rf.voteCounter++
 				}
 
@@ -538,9 +539,9 @@ func (rf *Raft) pingLoop() {
 
 					rf.mu.Lock()
 
-					if reply.term > rf.currentTerm {
+					if reply.Term > rf.currentTerm {
 						// 变回 follower
-						rf.currentTerm = reply.term
+						rf.currentTerm = reply.Term
 						rf.role = FOLLOWER
 						rf.votedFor = -1
 						rf.electionTimer.Reset(getRandomElectionTimeout())
@@ -553,7 +554,7 @@ func (rf *Raft) pingLoop() {
 						return
 					}
 
-					if reply.success {
+					if reply.Success {
 						rf.matchIndex[id] = args.PrevLogIndex + len(args.Entries)
 						rf.nextIndex[id] = rf.matchIndex[id] + 1
 
