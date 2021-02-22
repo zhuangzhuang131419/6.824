@@ -243,22 +243,30 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Success = false
 	if args.Term < rf.currentTerm {
 		// leader 的 term 落后于 follower
+		_, _ = DPrintf("leader's term is smaller than follower")
 		return
 	}
+
+	rf.role = FOLLOWER
+	rf.currentTerm = args.Term
+	rf.electionTimer.Reset(getRandomElectionTimeout())
 
 	if len(rf.log) <= args.PrevLogIndex {
 		// log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
 		// follower 在它的日志中找不到包含相同索引位置和任期号的条目，那么他就会拒绝该新的日志条目
+		_, _ = DPrintf("log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm")
 		return
 	}
 
 	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		// an existing entry conflicts with a new one (same index but different terms),
-		//deleting the existing
+		_, _ = DPrintf("conflict with new one")
+		// deleting the existing
 		rf.log = rf.log[0:args.PrevLogIndex]
 		return
 	}
 
+	//_, _ = DPrintf("AppendEntry...")
 	// append any new entries not already in the log
 	rf.log = append(rf.log[0:args.PrevLogIndex + 1], args.Entries...)
 
@@ -304,7 +312,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	_, _ = DPrintf("Send RequestVote. reply: %v", reply)
+	// _, _ = DPrintf("Send RequestVote. reply: %v", reply)
 	return ok
 }
 
@@ -453,8 +461,8 @@ func (rf *Raft) electionLoop() {
 				reply := &RequestVoteReply{}
 				rf.mu.Unlock()
 
-				if ok := rf.sendRequestVote(rf.me, args, reply); !ok {
-					_, _ = DPrintf("send Request Vote to server failed. server: %v, args: %v, reply: %v", rf.string(), args, reply)
+				if ok := rf.sendRequestVote(id, args, reply); !ok {
+					// _, _ = DPrintf("send Request Vote to server failed. server: %v, args: %v, reply: %v", rf.string(), args, reply)
 					return
 				}
 
@@ -524,8 +532,6 @@ func (rf *Raft) pingLoop() {
 				continue
 			}
 
-
-
 			go func(id int) {
 
 				for  {
@@ -539,9 +545,10 @@ func (rf *Raft) pingLoop() {
 					}
 
 					reply := &AppendEntriesReply{}
-
-					if ok := rf.sendAppendEntries(rf.me, args, reply); !ok {
-						_, _ = DPrintf("Send AppendEntries RPC Failed. Raft: %v", rf.string())
+					// _, _ = DPrintf("%v Send AppendEntries. Args: %v", rf.string(), args)
+					if ok := rf.sendAppendEntries(id, args, reply); !ok {
+						_, _ = DPrintf("%v Send AppendEntries RPC Failed. Args: %v", rf.string(), args)
+						return
 					}
 
 					rf.mu.Lock()
@@ -571,8 +578,10 @@ func (rf *Raft) pingLoop() {
 						//for args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex].Term == args.PrevLogTerm {
 						//	rf.nextIndex[id]
 						//}
-						_, _ = DPrintf("Retry AppendEntries")
-						rf.nextIndex[id]--
+						// _, _ = DPrintf("Retry AppendEntries")
+						if args.PrevLogIndex > 0 {
+							rf.nextIndex[id]--
+						}
 						rf.mu.Unlock()
 					}
 				}
