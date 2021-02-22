@@ -191,10 +191,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	reply = &RequestVoteReply{}
-	_, _ = DPrintf("Call Request Vote. args: %v, reply: %v", args, reply)
+	_, _ = DPrintf("Call Request Vote. args: %v", args)
 	if args.Term < rf.currentTerm {
 		// candidate 的 term 落后于 follower
+		_, _ = DPrintf("candidate term is smaller than follower %v", rf.string())
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 		return
@@ -202,7 +202,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// candidate term >= follower's term
 		if rf.votedFor == args.CandidateID || rf.votedFor == -1 {
 			// candidate's log is at least up up-to-date as receiver's log
-
+			// _, _ = DPrintf("Follower %v hasn't vote yet.", rf.string())
 			/*
 				Raft determines which of two logs is more up-to-date by
 				comparing the index and term of the last entries in the logs.
@@ -213,13 +213,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				If the logs end with the same term, then whichever log is longer is more up-to-date.
 			*/
 
+			// _, _ = DPrintf("args.LastLogTerm: %v. rf.log[len(rf.log)-1].Term: %v", args.LastLogTerm, rf.log[len(rf.log)-1].Term)
 			if args.LastLogTerm > rf.log[len(rf.log)-1].Term {
 				reply.Term = args.Term
 				reply.VoteGranted = true
 				rf.votedFor = args.CandidateID
 				return
 			} else if rf.log[len(rf.log)-1].Term == args.LastLogTerm {
-				if args.LastLogIndex >= len(rf.log) {
+				if args.LastLogIndex >= len(rf.log) - 1 {
+					_, _ = DPrintf("%v Vote for %v", rf.string(), args.CandidateID)
 					reply.Term = args.Term
 					reply.VoteGranted = true
 					rf.votedFor = args.CandidateID
@@ -236,10 +238,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	reply = &AppendEntriesReply{
-		Term:    rf.currentTerm,
-		Success: false,
-	}
+
+	reply.Term = rf.currentTerm
+	reply.Success = false
 	if args.Term < rf.currentTerm {
 		// leader 的 term 落后于 follower
 		return
@@ -303,6 +304,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	_, _ = DPrintf("Send RequestVote. reply: %v", reply)
 	return ok
 }
 
@@ -378,7 +380,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (2A, 2B, 2C).
 	rf.currentTerm = 0
-	rf.lastApplied = -1
+	rf.lastApplied = 0
+	rf.commitIndex = 0
 
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
@@ -479,12 +482,16 @@ func (rf *Raft) electionLoop() {
 		}
 
 		wg.Wait()
+		_, _ = DPrintf("%v Received %v tickets.", rf.string(), rf.voteCounter)
 
 		if rf.voteCounter > len(rf.peers) / 2 {
 			// 获得过半选票，成为 leader
 			if rf.role != CANDIDATE {
 				return
 			}
+
+			_, _ = DPrintf("%s change to leader", rf.string())
+
 			rf.role = LEADER
 			rf.votedFor = -1
 
@@ -597,6 +604,6 @@ func getRandomElectionTimeout() time.Duration {
 }
 
 func (rf *Raft) string() string {
-	return fmt.Sprintf("[%v:%d; Term:%d; VotedFor:%d; logLen:%v; Commit:%v; Apply:%v]",
+	return fmt.Sprintf("[Role:%v; Index:%d; Term:%d; VotedFor:%d; logLen:%v; Commit:%v; Apply:%v]",
 		rf.role, rf.me, rf.currentTerm, rf.votedFor, len(rf.log), rf.commitIndex, rf.lastApplied)
 }
