@@ -378,13 +378,27 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.currentTerm = 0
 	rf.lastApplied = -1
-	rf.role = FOLLOWER
-	rf.log = make([]Entry, 0)
+
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
+
+	rf.role = FOLLOWER
+	rand.Seed(time.Now().UnixNano())
+	rf.log = []Entry{
+		{
+			Term: 0,
+			Command: nil,
+		},
+	}
+
+	rf.electionTimer = time.NewTimer(getRandomElectionTimeout())
+	rf.pingTimer = time.NewTimer(HEART_BEAT_INTERVAL)
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-	go rf.raftLoop()
+
+	go rf.electionLoop()
+	go rf.applyLoop()
 
 	return rf
 }
@@ -392,38 +406,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 //
 // 三个loop: electionLoop, pingLoop, applyLoop
 //
-func (rf *Raft) raftLoop() {
-	for {
-		if rf.dead != 1 {
-
-			for i, _ := range rf.peers {
-				args := &RequestVoteArgs{
-					Term:         rf.currentTerm,
-					CandidateID:  i,
-					LastLogIndex: len(rf.log) - 1,
-					LastLogTerm:  rf.log[len(rf.log)-1].Term,
-				}
-				reply := &RequestVoteReply{}
-
-				go rf.sendRequestVote(rf.me, args, reply)
-				if reply.voteGranted {
-					rf.mu.Lock()
-					rf.voteCounter++
-					rf.mu.Unlock()
-				}
-			}
-
-			if rf.voteCounter >= len(rf.peers)/2+1 {
-				// 超过半数
-
-			}
-
-		} else {
-			break
-		}
-	}
-}
-
 func (rf *Raft) electionLoop() {
 	for {
 		<-rf.electionTimer.C
@@ -527,18 +509,66 @@ func (rf *Raft) pingLoop() {
 
 		<-rf.pingTimer.C
 
-		args := &AppendEntriesArgs{
-			Term:         rf.currentTerm,
-			LeaderID:     rf.me,
-			PrevLogIndex: len(rf.log) - 1,
-			PrevLogTerm:  rf.log[len(rf.log)-1].Term,
-			Entries:      rf.log,
-		}
+		for i := range rf.peers {
+			if i == rf.me {
+				rf.nextIndex[i] = len(rf.log)
+				rf.matchIndex[i] = len(rf.log)
+				continue
+			}
 
-		reply := &AppendEntriesReply{}
 
-		if ok := rf.sendAppendEntries(rf.me, args, reply); !ok {
-			_, _ = DPrintf("Send AppendEntries RPC Failed. Raft: %v", rf.string())
+
+			go func(id int) {
+
+				for  {
+					args := &AppendEntriesArgs{
+						Term:         rf.currentTerm,
+						LeaderID:     rf.me,
+						PrevLogIndex: rf.nextIndex[id] - 1,
+						PrevLogTerm:  rf.log[rf.nextIndex[id] - 1].Term,
+						Entries:      rf.log[rf.nextIndex[id]:],
+						LeaderCommit: rf.commitIndex,
+					}
+
+					reply := &AppendEntriesReply{}
+
+					if ok := rf.sendAppendEntries(rf.me, args, reply); !ok {
+						_, _ = DPrintf("Send AppendEntries RPC Failed. Raft: %v", rf.string())
+					}
+
+					rf.mu.Lock()
+
+					if reply.term > rf.currentTerm {
+						// 变回 follower
+						rf.currentTerm = reply.term
+						rf.role = FOLLOWER
+						rf.votedFor = -1
+						rf.electionTimer.Reset(getRandomElectionTimeout())
+						rf.mu.Unlock()
+						return
+					}
+
+					if rf.currentTerm != args.Term || rf.role != LEADER {
+						rf.mu.Unlock()
+						return
+					}
+
+					if reply.success {
+						rf.matchIndex[id] = args.PrevLogIndex + len(args.Entries)
+						rf.nextIndex[id] = rf.matchIndex[id] + 1
+
+						rf.mu.Unlock()
+						break
+					} else {
+						//for args.PrevLogIndex > 0 && rf.log[args.PrevLogIndex].Term == args.PrevLogTerm {
+						//	rf.nextIndex[id]
+						//}
+						_, _ = DPrintf("Retry AppendEntries")
+						rf.nextIndex[id]--
+						rf.mu.Unlock()
+					}
+				}
+			}(i)
 		}
 
 		rf.pingTimer.Reset(HEART_BEAT_INTERVAL)
