@@ -229,6 +229,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				}
 			}
 		}
+		_, _ = DPrintf("Request Vote Failed. Follower vote for %v", rf.votedFor)
 		reply.Term = args.Term
 		reply.VoteGranted = false
 		return
@@ -238,6 +239,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	// _, _ = DPrintf("Call AppendEntry. args: %v", args)
 
 	reply.Term = rf.currentTerm
 	reply.Success = false
@@ -279,6 +281,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}
 	reply.Success = true
+	// _, _ = DPrintf("Send AppendEntry Successfully")
 }
 
 //
@@ -390,6 +393,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.lastApplied = 0
 	rf.commitIndex = 0
+	rf.votedFor = -1
 
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))

@@ -8,8 +8,8 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
 import "fmt"
+import "testing"
 import "time"
 import "math/rand"
 import "sync/atomic"
