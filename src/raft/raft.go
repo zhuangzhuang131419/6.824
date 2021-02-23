@@ -46,7 +46,7 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
-var HEART_BEAT_INTERVAL = 10 * time.Millisecond
+var HeartBeatInterval = 10 * time.Millisecond
 
 //
 // A Go object implementing a single Raft peer.
@@ -62,7 +62,6 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 	role        RoleType // 0-leader, 1-follower or 2-candidate
-	voteCounter int      // 投票计数器
 
 	// persistent state on all servers
 	currentTerm int     // latest term server has seen
@@ -91,6 +90,19 @@ const (
 	FOLLOWER  RoleType = 1
 	CANDIDATE RoleType = 2
 )
+
+func (r RoleType) String() string {
+	switch r {
+	case LEADER:
+		return "Leader"
+	case FOLLOWER:
+		return "Follower"
+	case CANDIDATE:
+		return "Candidate"
+	default:
+		return "Unknown"
+	}
+}
 
 type Entry struct {
 	Term    int // 这条日志所属的Term
@@ -160,6 +172,11 @@ type RequestVoteArgs struct {
 	LastLogTerm  int // term of candidate's last log entry
 }
 
+func (args *RequestVoteArgs) String() string {
+	return fmt.Sprintf("[Candidate %v; Term %v; LastLogIndex %v; LastLogTerm %v]",
+		args.CandidateID, args.Term, args.LastLogIndex, args.LastLogTerm)
+}
+
 type AppendEntriesArgs struct {
 	Term         int     // leader's term
 	LeaderID     int     // so follower can redirect clients
@@ -191,49 +208,61 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	_, _ = DPrintf("Call Request Vote. args: %v", args)
+	// _, _ = DPrintf("Call %v RequestVote. Args: %v", rf.String(), args)
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = false
 	if args.Term < rf.currentTerm {
 		// candidate 的 term 落后于 follower
-		_, _ = DPrintf("candidate term is smaller than follower %v", rf.string())
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
+		_, _ = DPrintf("candidate term is smaller than follower %v", rf.String())
 		return
-	} else {
-		// candidate term >= follower's term
-		if rf.votedFor == args.CandidateID || rf.votedFor == -1 {
-			// candidate's log is at least up up-to-date as receiver's log
-			// _, _ = DPrintf("Follower %v hasn't vote yet.", rf.string())
-			/*
-				Raft determines which of two logs is more up-to-date by
-				comparing the index and term of the last entries in the logs.
+	}
 
-				If the logs have last entries with different terms,
-				then the log with the later term is more up-to-date.
+	if args.Term > rf.currentTerm {
+		rf.role = FOLLOWER
+		rf.votedFor = -1
+		rf.currentTerm = args.Term
+		rf.electionTimer.Reset(getRandomElectionTimeout())
+		_, _ = DPrintf("%v change to candidate", rf.String())
+	}
 
-				If the logs end with the same term, then whichever log is longer is more up-to-date.
-			*/
+	// candidate term >= follower's term
+	// _, _ = DPrintf("Request Vote. Follower %v vote for %v", rf.String(), rf.votedFor)
+	if rf.votedFor == args.CandidateID || rf.votedFor == -1 {
+		// candidate's log is at least up up-to-date as receiver's log
+		// _, _ = DPrintf("Follower %v hasn't vote yet.", rf.String())
+		/*
+			Raft determines which of two logs is more up-to-date by
+			comparing the index and term of the last entries in the logs.
 
-			// _, _ = DPrintf("args.LastLogTerm: %v. rf.log[len(rf.log)-1].Term: %v", args.LastLogTerm, rf.log[len(rf.log)-1].Term)
-			if args.LastLogTerm > rf.log[len(rf.log)-1].Term {
+			If the logs have last entries with different terms,
+			then the log with the later term is more up-to-date.
+
+			If the logs end with the same term, then whichever log is longer is more up-to-date.
+		*/
+
+		// _, _ = DPrintf("args.LastLogTerm: %v. rf.log[len(rf.log)-1].Term: %v", args.LastLogTerm, rf.log[len(rf.log)-1].Term)
+		if args.LastLogTerm > rf.log[len(rf.log)-1].Term {
+			reply.Term = args.Term
+			reply.VoteGranted = true
+			rf.votedFor = args.CandidateID
+			rf.electionTimer.Reset(getRandomElectionTimeout())
+			_, _ = DPrintf("%v Vote for %v", rf.String(), args.CandidateID)
+			return
+		} else if rf.log[len(rf.log)-1].Term == args.LastLogTerm {
+			if args.LastLogIndex >= len(rf.log) - 1 {
 				reply.Term = args.Term
 				reply.VoteGranted = true
 				rf.votedFor = args.CandidateID
+				rf.electionTimer.Reset(getRandomElectionTimeout())
+				_, _ = DPrintf("%v Vote for %v", rf.String(), args.CandidateID)
 				return
-			} else if rf.log[len(rf.log)-1].Term == args.LastLogTerm {
-				if args.LastLogIndex >= len(rf.log) - 1 {
-					_, _ = DPrintf("%v Vote for %v", rf.string(), args.CandidateID)
-					reply.Term = args.Term
-					reply.VoteGranted = true
-					rf.votedFor = args.CandidateID
-					return
-				}
 			}
 		}
-		_, _ = DPrintf("Request Vote Failed. Follower vote for %v", rf.votedFor)
-		reply.Term = args.Term
-		reply.VoteGranted = false
-		return
 	}
+	_, _ = DPrintf("Request Vote Failed. Follower vote for %v", rf.votedFor)
+	reply.Term = args.Term
+	reply.VoteGranted = false
+	return
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -245,12 +274,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Success = false
 	if args.Term < rf.currentTerm {
 		// leader 的 term 落后于 follower
-		_, _ = DPrintf("leader's term is smaller than follower")
+		_, _ = DPrintf("leader's %v term is smaller than follower %v", args, rf.String())
 		return
 	}
 
+	// 在等待投票期间, candidate可能会收到另一个声称自己是leader的服务器节点发来的 AppendEntries RPC.
+	// 如果这个leader的任期号不小于candidate当前的任期号, 那么 candidate 会承认该 leader 的合法地位
 	rf.role = FOLLOWER
 	rf.currentTerm = args.Term
+	rf.votedFor = -1
 	rf.electionTimer.Reset(getRandomElectionTimeout())
 
 	if len(rf.log) <= args.PrevLogIndex {
@@ -270,11 +302,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	//_, _ = DPrintf("AppendEntry...")
 	// append any new entries not already in the log
-	rf.log = append(rf.log[0:args.PrevLogIndex + 1], args.Entries...)
+	rf.log = append(rf.log[0:args.PrevLogIndex+1], args.Entries...)
 
 	if args.LeaderCommit > rf.commitIndex {
 		// commitIndex = min(leaderCommit, index of last new entry)
-		if args.LeaderCommit > len(rf.log) - 1 {
+		if args.LeaderCommit > len(rf.log)-1 {
 			rf.commitIndex = len(rf.log) - 1
 		} else {
 			rf.commitIndex = args.LeaderCommit
@@ -394,6 +426,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 	rf.commitIndex = 0
 	rf.votedFor = -1
+	rf.mu = sync.Mutex{}
 
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
@@ -402,13 +435,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rand.Seed(time.Now().UnixNano())
 	rf.log = []Entry{
 		{
-			Term: 0,
+			Term:    0,
 			Command: nil,
 		},
 	}
 
 	rf.electionTimer = time.NewTimer(getRandomElectionTimeout())
-	rf.pingTimer = time.NewTimer(HEART_BEAT_INTERVAL)
+	rf.pingTimer = time.NewTimer(HeartBeatInterval)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -437,23 +470,24 @@ func (rf *Raft) electionLoop() {
 		rf.role = CANDIDATE
 		rf.currentTerm++
 		rf.votedFor = rf.me
-		rf.voteCounter = 0
 		rf.persist()
-		_, _ = DPrintf("%s change to candidate", rf.string())
+		_, _ = DPrintf("%s change to candidate", rf.String())
 		rf.mu.Unlock()
 
 		// 请求投票
 		// 保证当选的 candidate 的 log 比过半数的 peer 更 up-to-date
 
-		wg := sync.WaitGroup{}
 
+		wg := sync.WaitGroup{}
+		vote := 0
 		for i := range rf.peers {
+
 			if i == rf.me {
-				rf.votedFor = rf.me
+				vote++
 				continue
 			}
-			wg.Add(1)
 
+			wg.Add(1)
 			go func(id int) {
 				rf.mu.Lock()
 				args := &RequestVoteArgs{
@@ -465,13 +499,23 @@ func (rf *Raft) electionLoop() {
 				reply := &RequestVoteReply{}
 				rf.mu.Unlock()
 
-				if ok := rf.sendRequestVote(id, args, reply); !ok {
-					// _, _ = DPrintf("send Request Vote to server failed. server: %v, args: %v, reply: %v", rf.string(), args, reply)
-					return
-				}
+				_, _ = DPrintf("Send Request index %v Vote. args: %v", id, args)
+				ok := rf.sendRequestVote(id, args, reply)
 
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
+				defer func() {
+					wg.Done()
+				}()
+
+				if !ok {
+					_, _ = DPrintf("%v get request vote reply from peer-%d: %v", rf.String(), id, reply)
+					return
+				}
+
+				if reply.VoteGranted {
+					vote++
+				}
 
 				if reply.Term > rf.currentTerm {
 					// 变回 follower
@@ -484,25 +528,22 @@ func (rf *Raft) electionLoop() {
 				if rf.role != CANDIDATE || rf.currentTerm != args.Term {
 					return
 				}
-
-				if reply.VoteGranted {
-					rf.voteCounter++
-				}
-
-				wg.Done()
 			}(i)
 		}
 
-		wg.Wait()
-		_, _ = DPrintf("%v Received %v tickets.", rf.string(), rf.voteCounter)
+		if vote <= len(rf.peers) / 2 {
+			wg.Wait()
+		}
 
-		if rf.voteCounter > len(rf.peers) / 2 {
+		_, _ = DPrintf("%v Received %v tickets.", rf.String(), vote)
+
+		if vote > len(rf.peers) / 2 {
 			// 获得过半选票，成为 leader
 			if rf.role != CANDIDATE {
 				return
 			}
 
-			_, _ = DPrintf("%s change to leader", rf.string())
+			_, _ = DPrintf("%s change to leader", rf.String())
 
 			rf.role = LEADER
 			rf.votedFor = -1
@@ -512,7 +553,7 @@ func (rf *Raft) electionLoop() {
 				rf.nextIndex[i] = len(rf.log)
 			}
 
-			rf.pingTimer.Reset(HEART_BEAT_INTERVAL)
+			rf.pingTimer.Reset(HeartBeatInterval)
 			go rf.pingLoop()
 		}
 
@@ -532,13 +573,13 @@ func (rf *Raft) pingLoop() {
 		for i := range rf.peers {
 			if i == rf.me {
 				rf.nextIndex[i] = len(rf.log)
-				rf.matchIndex[i] = len(rf.log)
+				rf.matchIndex[i] = len(rf.log) - 1
 				continue
 			}
 
 			go func(id int) {
 
-				for  {
+				for {
 					args := &AppendEntriesArgs{
 						Term:         rf.currentTerm,
 						LeaderID:     rf.me,
@@ -549,9 +590,9 @@ func (rf *Raft) pingLoop() {
 					}
 
 					reply := &AppendEntriesReply{}
-					// _, _ = DPrintf("%v Send AppendEntries. Args: %v", rf.string(), args)
+					// _, _ = DPrintf("%v Send AppendEntries. Args: %v", rf.String(), args)
 					if ok := rf.sendAppendEntries(id, args, reply); !ok {
-						_, _ = DPrintf("%v Send AppendEntries RPC Failed. Args: %v", rf.string(), args)
+						// _, _ = DPrintf("%v Send AppendEntries RPC Failed. Args: %v", rf.String(), args)
 						return
 					}
 
@@ -563,6 +604,7 @@ func (rf *Raft) pingLoop() {
 						rf.role = FOLLOWER
 						rf.votedFor = -1
 						rf.electionTimer.Reset(getRandomElectionTimeout())
+						_, _ = DPrintf("%v change to follower.", rf.String())
 						rf.mu.Unlock()
 						return
 					}
@@ -592,7 +634,7 @@ func (rf *Raft) pingLoop() {
 			}(i)
 		}
 
-		rf.pingTimer.Reset(HEART_BEAT_INTERVAL)
+		rf.pingTimer.Reset(HeartBeatInterval)
 	}
 }
 
@@ -616,7 +658,7 @@ func getRandomElectionTimeout() time.Duration {
 	return time.Duration((rand.Intn(150) + 150) * int(time.Millisecond))
 }
 
-func (rf *Raft) string() string {
-	return fmt.Sprintf("[Role:%v; Index:%d; Term:%d; VotedFor:%d; logLen:%v; Commit:%v; Apply:%v]",
-		rf.role, rf.me, rf.currentTerm, rf.votedFor, len(rf.log), rf.commitIndex, rf.lastApplied)
+func (rf *Raft) String() string {
+	return fmt.Sprintf("[Role:%v; Index:%d; Term:%d; VotedFor:%d; logLen:%v; Commit:%v; Apply:%v; Peer:%v]",
+		rf.role, rf.me, rf.currentTerm, rf.votedFor, len(rf.log), rf.commitIndex, rf.lastApplied, len(rf.peers))
 }
