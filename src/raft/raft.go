@@ -61,7 +61,7 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	role        RoleType // 0-leader, 1-follower or 2-candidate
+	role RoleType // 0-leader, 1-follower or 2-candidate
 
 	// persistent state on all servers
 	currentTerm int     // latest term server has seen
@@ -249,7 +249,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			_, _ = DPrintf("%v Vote for %v", rf.String(), args.CandidateID)
 			return
 		} else if rf.log[len(rf.log)-1].Term == args.LastLogTerm {
-			if args.LastLogIndex >= len(rf.log) - 1 {
+			if args.LastLogIndex >= len(rf.log)-1 {
 				reply.Term = args.Term
 				reply.VoteGranted = true
 				rf.votedFor = args.CandidateID
@@ -472,24 +472,27 @@ func (rf *Raft) electionLoop() {
 		rf.votedFor = rf.me
 		rf.persist()
 		_, _ = DPrintf("%s change to candidate", rf.String())
-		rf.mu.Unlock()
+		//rf.mu.Unlock()
 
 		// 请求投票
 		// 保证当选的 candidate 的 log 比过半数的 peer 更 up-to-date
 
 
-		wg := sync.WaitGroup{}
+		// wg := sync.WaitGroup{}
+		cond := sync.NewCond(&rf.mu)
 		vote := 0
+		finish := 0
 		for i := range rf.peers {
 
 			if i == rf.me {
 				vote++
+				finish++
 				continue
 			}
 
-			wg.Add(1)
+			// wg.Add(1)
 			go func(id int) {
-				rf.mu.Lock()
+				//rf.mu.Lock()
 				args := &RequestVoteArgs{
 					Term:         rf.currentTerm,
 					CandidateID:  rf.me,
@@ -497,16 +500,21 @@ func (rf *Raft) electionLoop() {
 					LastLogTerm:  rf.log[len(rf.log)-1].Term,
 				}
 				reply := &RequestVoteReply{}
-				rf.mu.Unlock()
+				//rf.mu.Unlock()
 
 				_, _ = DPrintf("Send Request index %v Vote. args: %v", id, args)
 				ok := rf.sendRequestVote(id, args, reply)
+				// fmt.Printf("ok: %v\n", ok)
 
-				rf.mu.Lock()
-				defer rf.mu.Unlock()
 				defer func() {
-					wg.Done()
+					// wg.Done()
+					// fmt.Printf("waitgroup done. id:%v\n", id)
+					finish++
+					cond.Broadcast()
 				}()
+
+				//rf.mu.Lock()
+				//defer rf.mu.Unlock()
 
 				if !ok {
 					_, _ = DPrintf("%v get request vote reply from peer-%d: %v", rf.String(), id, reply)
@@ -529,11 +537,19 @@ func (rf *Raft) electionLoop() {
 					return
 				}
 			}(i)
+			// wg.Done()
 		}
 
-		if vote <= len(rf.peers) / 2 {
-			wg.Wait()
+		// if vote <= len(rf.peers) / 2 {
+			// wg.Wait()
+		// }
+
+		// wg.Wait()
+		for vote <= len(rf.peers) / 2 && finish != len(rf.peers) {
+			//fmt.Printf("finished: %v\n", finish)
+			cond.Wait()
 		}
+
 
 		_, _ = DPrintf("%v Received %v tickets.", rf.String(), vote)
 
@@ -543,21 +559,22 @@ func (rf *Raft) electionLoop() {
 				return
 			}
 
-			_, _ = DPrintf("%s change to leader", rf.String())
-
 			rf.role = LEADER
 			rf.votedFor = -1
-
 			for i := range rf.peers {
 				rf.matchIndex[i] = 0
 				rf.nextIndex[i] = len(rf.log)
 			}
-
 			rf.pingTimer.Reset(HeartBeatInterval)
 			go rf.pingLoop()
-		}
 
+			_, _ = DPrintf("%s change to leader", rf.String())
+
+		}
+		rf.mu.Unlock()
 	}
+
+
 }
 
 func (rf *Raft) pingLoop() {
@@ -584,7 +601,7 @@ func (rf *Raft) pingLoop() {
 						Term:         rf.currentTerm,
 						LeaderID:     rf.me,
 						PrevLogIndex: rf.nextIndex[id] - 1,
-						PrevLogTerm:  rf.log[rf.nextIndex[id] - 1].Term,
+						PrevLogTerm:  rf.log[rf.nextIndex[id]-1].Term,
 						Entries:      rf.log[rf.nextIndex[id]:],
 						LeaderCommit: rf.commitIndex,
 					}
